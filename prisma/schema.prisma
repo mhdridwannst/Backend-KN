@@ -1,0 +1,177 @@
+// ==============================================================================
+// Prisma Schema: B2B SaaS Multi-Tenant Inventory & POS
+// ==============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==============================================================================
+// ENUMS
+// ==============================================================================
+
+enum UserRole {
+  SuperAdmin
+  Owner
+  Cashier
+
+  @@map("user_role")
+}
+
+enum TenantStatus {
+  active
+  suspended
+  trial
+
+  @@map("tenant_status")
+}
+
+enum PaymentMethod {
+  cash
+  qris
+  debit
+  transfer
+
+  @@map("payment_method")
+}
+
+enum PaymentStatus {
+  pending
+  completed
+  cancelled
+
+  @@map("payment_status")
+}
+
+// ==============================================================================
+// MODELS
+// ==============================================================================
+
+model Tenant {
+  id        String       @id @default(uuid()) @db.Uuid
+  name      String       @db.VarChar(150)
+  slug      String       @unique @db.VarChar(100)
+  status    TenantStatus @default(trial)
+  createdAt DateTime     @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt DateTime     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz()
+
+  // Relations
+  users              User[]
+  products           Product[]
+  inventoryStocks    InventoryStock[]
+  transactions       Transaction[]
+  transactionDetails TransactionDetail[]
+
+  @@map("tenants")
+}
+
+model User {
+  id           String    @id @default(uuid()) @db.Uuid
+  tenantId     String?   @map("tenant_id") @db.Uuid
+  fullName     String    @map("full_name") @db.VarChar(150)
+  email        String    @db.VarChar(255)
+  passwordHash String    @map("password_hash") @db.VarChar(255)
+  role         UserRole
+  isActive     Boolean   @default(true) @map("is_active")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz()
+
+  // Relations
+  tenant       Tenant?       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@unique([tenantId, email], map: "uq_tenant_email")
+  @@index([tenantId], map: "idx_users_tenant_id")
+  @@map("users")
+}
+
+model Product {
+  id           String   @id @default(uuid()) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  sku          String   @db.VarChar(64)
+  barcode      String?  @db.VarChar(64)
+  name         String   @db.VarChar(200)
+  category     String?  @db.VarChar(100)
+  basePrice    Decimal  @default(0.00) @map("base_price") @db.Decimal(15, 2)
+  sellingPrice Decimal  @default(0.00) @map("selling_price") @db.Decimal(15, 2)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz()
+
+  // Relations
+  tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  inventoryStocks    InventoryStock[]
+  transactionDetails TransactionDetail[]
+
+  @@unique([tenantId, sku], map: "uq_tenant_product_sku")
+  @@index([tenantId], map: "idx_products_tenant_id")
+  @@index([tenantId, barcode], map: "idx_products_barcode")
+  @@map("products")
+}
+
+model InventoryStock {
+  id           String   @id @default(uuid()) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  productId    String   @map("product_id") @db.Uuid
+  outletName   String   @default("Main Outlet") @map("outlet_name") @db.VarChar(100)
+  quantity     Decimal  @default(0.00) @db.Decimal(12, 2)
+  minThreshold Decimal  @default(5.00) @map("min_threshold") @db.Decimal(12, 2)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz()
+
+  // Relations
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, productId, outletName], map: "uq_tenant_product_outlet")
+  @@index([tenantId, productId], map: "idx_inventory_stocks_tenant_product")
+  @@map("inventory_stocks")
+}
+
+model Transaction {
+  id              String        @id @default(uuid()) @db.Uuid
+  tenantId        String        @map("tenant_id") @db.Uuid
+  invoiceNumber   String        @map("invoice_number") @db.VarChar(100)
+  cashierId       String        @map("cashier_id") @db.Uuid
+  totalAmount     Decimal       @default(0.00) @map("total_amount") @db.Decimal(15, 2)
+  taxAmount       Decimal       @default(0.00) @map("tax_amount") @db.Decimal(15, 2)
+  discountAmount  Decimal       @default(0.00) @map("discount_amount") @db.Decimal(15, 2)
+  paymentMethod   PaymentMethod @default(cash) @map("payment_method")
+  paymentStatus   PaymentStatus @default(completed) @map("payment_status")
+  transactionDate DateTime      @default(now()) @map("transaction_date") @db.Timestamptz()
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz()
+
+  // Relations
+  tenant  Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cashier User                @relation(fields: [cashierId], references: [id], onDelete: Restrict)
+  details TransactionDetail[]
+
+  @@unique([tenantId, invoiceNumber], map: "uq_tenant_invoice_number")
+  @@index([tenantId, transactionDate(sort: Desc)], map: "idx_transactions_tenant_date")
+  @@index([tenantId, cashierId], map: "idx_transactions_cashier")
+  @@map("transactions")
+}
+
+model TransactionDetail {
+  id            String   @id @default(uuid()) @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  transactionId String   @map("transaction_id") @db.Uuid
+  productId     String   @map("product_id") @db.Uuid
+  quantity      Decimal  @db.Decimal(12, 2)
+  unitPrice     Decimal  @map("unit_price") @db.Decimal(15, 2)
+  subtotal      Decimal  @db.Decimal(15, 2)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  // Relations
+  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  product     Product     @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, transactionId], map: "idx_trx_details_tenant_trx")
+  @@index([tenantId, productId], map: "idx_trx_details_product")
+  @@map("transaction_details")
+}
